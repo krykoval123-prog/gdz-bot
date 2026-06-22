@@ -3,7 +3,6 @@ import aiohttp
 import sqlite3
 import base64
 import logging
-import os
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -14,21 +13,13 @@ from aiohttp import web
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# === НАСТРОЙКИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
-BOT_TOKEN = os.getenv("8723169693:AAEk69a40-PlC1kWVgd-2F1MhKniitSmLn0")
-DA_TOKEN = os.getenv("hu4ML8HVyzRIHFbYnZdq")
-DONATION_LINK = os.getenv("https://www.donationalerts.com/r/mYFIVEBOT")
-YANDEX_VISION_API_KEY = os.getenv("AQVN29h2XBqfhDoO008M8xnF3lWO6X4TkTTG2mPgGPT")
-YANDEX_GPT_API_KEY = os.getenv("AQVNwatuUPOykH-T62W2hxgRKFwnlf8iY897pAno")
-YANDEX_FOLDER_ID = os.getenv("b1gomdro48eoehuesbdn")
-
-if not all([BOT_TOKEN, DA_TOKEN, YANDEX_VISION_API_KEY, YANDEX_GPT_API_KEY, YANDEX_FOLDER_ID]):
-    logger.error("❌ Не все переменные окружения установлены!")
-    logger.error(f"BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
-    logger.error(f"DA_TOKEN: {'✅' if DA_TOKEN else '❌'}")
-    logger.error(f"YANDEX_VISION_API_KEY: {'✅' if YANDEX_VISION_API_KEY else '❌'}")
-    logger.error(f"YANDEX_GPT_API_KEY: {'✅' if YANDEX_GPT_API_KEY else '❌'}")
-    logger.error(f"YANDEX_FOLDER_ID: {'✅' if YANDEX_FOLDER_ID else '❌'}")
+# === НАСТРОЙКИ (ТВОИ ТОКЕНЫ) ===
+BOT_TOKEN = "8723169693:AAEK69a40-P1C1kWVgd-2F1MhKniitSmLn0"
+DA_TOKEN = "hu4ML8HVyzRlHFbYnZdq"
+DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
+YANDEX_VISION_API_KEY = "AQVN29h2XBqfhDo0008M8xnF31W06X4TkTTG2mPgGPT"
+YANDEX_GPT_API_KEY = "AQVNwatuUPOykH-T62W2hxgRKFwn1f8iY897pAno"
+YANDEX_FOLDER_ID = "b1gomdro48eoeheuesbdn"
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
@@ -441,6 +432,7 @@ async def run_web_server():
     app.router.add_get("/", health_check)
     runner = web.AppRunner(app)
     await runner.setup()
+    import os
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
