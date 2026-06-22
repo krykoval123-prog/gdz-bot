@@ -18,8 +18,8 @@ BOT_TOKEN = "8723169693:AAEk69a40-PlC1kWVgd-2F1MhKniitSmLn0"
 DA_TOKEN = "hu4ML8HVyzRlHFbYnZdq"
 DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 YANDEX_VISION_API_KEY = "AQVN29h2XBqfhDo0008M8xnF31W06X4TkTTG2mPgGPT"
-YANDEX_GPT_API_KEY = "AQVNwatuUPOykH-T62W2hxgRKFwn1f8iY897pAno"
-YANDEX_FOLDER_ID = "b1gomdro48eoeheuesbdn"
+YANDEX_GPT_API_KEY = "AQVNxq1LRjBAk8lQ8wWkxi4OMHjAd3HSLqyw-j6o"
+YANDEX_FOLDER_ID = "b1get9kj6ckv3np0svmk"
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
