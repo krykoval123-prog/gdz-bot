@@ -24,7 +24,7 @@ DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 
 YANDEX_VISION_API_KEY = "AQVN29h2XBqfhDo008M8xnF3lWO6X4TkTTG2mPg"
 YANDEX_GPT_API_KEY = "AQVNxq1LRjBAk8lQ8wWkxi4OMHjAd3HSLqyw-j6o"
-YANDEX_FOLDER_ID = "b1get9kj6ckv3np0svmk"
+YANDEX_FOLDER_ID = "b1gomdro48eoehuesbdn"
 
 ADMIN_ID = 1029055491  # Твой Telegram ID
 
