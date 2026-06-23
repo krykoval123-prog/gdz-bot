@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # === НАСТРОЙКИ ===
-BOT_TOKEN = "8723169693:AAEk69a40-PlC1kWVgd-2F1MhKniitSmLn0"
+BOT_TOKEN = "8723169693:AAEWKexNLVCuumgA5php5aSY_sUqSBCP8qg"
 DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 
 YANDEX_VISION_API_KEY = "AQVN29h2XBqfhDo008M8xnF3lWO6X4TkTTG2mPg"
