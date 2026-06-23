@@ -66,7 +66,7 @@ def get_user(user_id, username):
             (user_id, username)
         )
         conn.commit()
-        logger.info(f"👤 Новый пользователь: {user_id}")
+        logger.info(f"👤 Новый пользователь: {user_id} (@{username})")
     conn.close()
 
 
@@ -122,6 +122,7 @@ def decrement_free_requests(user_id):
         )
     conn.commit()
     conn.close()
+    logger.info(f"📊 Пользователь {user_id}: осталось {max(0, free_requests - 1)} бесплатных")
 
 
 def activate_subscription(user_id, days=30):
@@ -138,7 +139,7 @@ def activate_subscription(user_id, days=30):
 
 
 # ============================================
-# === РАСПОЗНАВАНИЕ ФОТО (ПОЛНОСТЬЮ ИСПРАВЛЕНО) ===
+# === РАСПОЗНАВАНИЕ ФОТО (ИСПРАВЛЕНО) ===
 # ============================================
 async def recognize_text_from_photo(photo_file_id):
     try:
@@ -155,7 +156,7 @@ async def recognize_text_from_photo(photo_file_id):
                     return None
                 photo_bytes = await resp.read()
         
-        logger.info(f"📥 Фото загружено, размер: {len(photo_bytes)} байт")
+        logger.info(f"📥 Фото загружено: {len(photo_bytes)} байт")
         
         # Кодируем в base64
         encoded_image = base64.b64encode(photo_bytes).decode('utf-8')
@@ -171,93 +172,90 @@ async def recognize_text_from_photo(photo_file_id):
             "folderId": YANDEX_FOLDER_ID,
             "analyze_specs": [
                 {
-                    "image": {
-                        "content": encoded_image
-                    },
-                    "features": [
-                        {
-                            "type": "TEXT_DETECTION"
-                        }
-                    ]
+                    "image": {"content": encoded_image},
+                    "features": [{"type": "TEXT_DETECTION"}]
                 }
             ]
         }
         
-        logger.info("📤 Отправляю в Yandex Vision...")
+        logger.info(f"📤 Отправляю в Vision (folderId: {YANDEX_FOLDER_ID})...")
         
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=data) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    logger.error(f"❌ Vision ошибка {resp.status}: {error_text}")
-                    return None
-                
+                status = resp.status
                 result = await resp.json()
-                logger.info(f"📥 Ответ Vision получен")
+                
+                logger.info(f"📥 Ответ Vision: статус {status}")
+                
+                if status != 200:
+                    logger.error(f"❌ Vision ошибка: {result}")
+                    return None
         
-        # Извлекаем текст (пробуем все возможные форматы)
+        # === ИЗВЛЕЧЕНИЕ ТЕКСТА (пробуем все форматы) ===
+        text = None
+        
+        # Формат 1: Через symbols (самый надёжный)
         try:
-            text = None
-            
-            # Формат 1: results[0].textAnnotation.fullText
+            pages = result["results"][0]["results"][0]["textDetection"]["pages"]
+            text_parts = []
+            for page in pages:
+                for block in page.get("blocks", []):
+                    for line in block.get("lines", []):
+                        words = []
+                        for word in line.get("words", []):
+                            symbols = word.get("symbols", [])
+                            word_text = "".join(s.get("text", "") for s in symbols)
+                            if word_text:
+                                words.append(word_text)
+                        if words:
+                            text_parts.append(" ".join(words))
+            text = "\n".join(text_parts)
+            if text and len(text.strip()) > 0:
+                logger.info(f"✅ Текст извлечён (формат symbols): {len(text)} симв.")
+        except Exception as e:
+            logger.warning(f"⚠️ Формат symbols не сработал: {e}")
+        
+        # Формат 2: textAnnotation.fullText
+        if not text:
             try:
                 text = result["results"][0]["textAnnotation"]["fullText"]
+                if text and len(text.strip()) > 0:
+                    logger.info(f"✅ Текст извлечён (формат textAnnotation): {len(text)} симв.")
+            except Exception as e:
+                logger.warning(f"⚠️ Формат textAnnotation не сработал: {e}")
+        
+        # Формат 3: Перебор всех возможных структур
+        if not text:
+            try:
+                text_parts = []
+                for r in result.get("results", []):
+                    for sub in r.get("results", []):
+                        td = sub.get("textDetection", {})
+                        for page in td.get("pages", []):
+                            for block in page.get("blocks", []):
+                                for line in block.get("lines", []):
+                                    line_text = ""
+                                    for word in line.get("words", []):
+                                        for sym in word.get("symbols", []):
+                                            line_text += sym.get("text", "")
+                                    if line_text.strip():
+                                        text_parts.append(line_text.strip())
+                text = "\n".join(text_parts)
                 if text:
-                    logger.info("✅ Текст извлечён (формат 1: textAnnotation)")
-            except (KeyError, IndexError, TypeError):
-                pass
-            
-            # Формат 2: results[0].results[0].textDetection
-            if not text:
-                try:
-                    pages = result["results"][0]["results"][0]["textDetection"]["pages"]
-                    text_parts = []
-                    for page in pages:
-                        for block in page.get("blocks", []):
-                            for line in block.get("lines", []):
-                                line_text = "".join(
-                                    word.get("text", "") for word in line.get("words", [])
-                                )
-                                if line_text.strip():
-                                    text_parts.append(line_text.strip())
-                    text = " ".join(text_parts)
-                    if text:
-                        logger.info("✅ Текст извлечён (формат 2: textDetection)")
-                except (KeyError, IndexError, TypeError):
-                    pass
-            
-            # Формат 3: прямой перебор
-            if not text:
-                try:
-                    text_parts = []
-                    for result_item in result.get("results", []):
-                        for sub_result in result_item.get("results", []):
-                            td = sub_result.get("textDetection", {})
-                            for page in td.get("pages", []):
-                                for block in page.get("blocks", []):
-                                    for line in block.get("lines", []):
-                                        words = [w.get("text", "") for w in line.get("words", [])]
-                                        if words:
-                                            text_parts.append(" ".join(words))
-                    text = "\n".join(text_parts)
-                    if text:
-                        logger.info("✅ Текст извлечён (формат 3: перебор)")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка формата 3: {e}")
-            
-            if not text or len(text.strip()) < 3:
-                logger.warning(f"⚠️ Текст пустой или слишком короткий")
-                logger.info(f"Полный ответ Vision: {result}")
-                return None
-            
-            logger.info(f"✅ Распознан текст ({len(text)} симв.): {text[:150]}...")
-            return text.strip()
-            
-        except Exception as e:
-            logger.error(f"❌ Не удалось извлечь текст: {e}")
-            logger.error(f"Полный ответ: {result}")
+                    logger.info(f"✅ Текст извлечён (формат перебор): {len(text)} симв.")
+            except Exception as e:
+                logger.warning(f"⚠️ Формат перебор не сработал: {e}")
+        
+        # Логируем полный ответ, если ничего не извлекли
+        if not text or len(text.strip()) < 3:
+            logger.error(f"❌ Текст не найден или слишком короткий")
+            logger.error(f"📋 Полный ответ Vision API:")
+            logger.error(result)
             return None
-            
+        
+        logger.info(f"✅ Распознано: {text[:200]}...")
+        return text.strip()
+        
     except Exception as e:
         logger.error(f"❌ Ошибка распознавания: {e}")
         import traceback
@@ -266,7 +264,7 @@ async def recognize_text_from_photo(photo_file_id):
 
 
 # ============================================
-# === РЕШЕНИЕ ЗАДАЧИ (УЛУЧШЕННЫЙ ПРОМПТ) ===
+# === РЕШЕНИЕ ЗАДАЧИ (YANDEX GPT) ===
 # ============================================
 async def solve_problem(problem_text):
     try:
@@ -315,7 +313,8 @@ async def solve_problem(problem_text):
 - Для задач с параметрами: рассматривай все случаи
 - Отвечай на русском языке
 - НЕ добавляй вводные слова ("Итак", "Давайте решим")
-- НЕ пиши лишних объяснений"""
+- НЕ пиши лишних объяснений
+- Для изображений с формулами — распознай и реши"""
         
         data = {
             "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-lite",
@@ -334,11 +333,11 @@ async def solve_problem(problem_text):
             async with session.post(url, headers=headers, json=data) as resp:
                 if resp.status == 401:
                     logger.error("❌ GPT: токен недействителен")
-                    return "❌ Внутренняя ошибка."
+                    return "❌ Внутренняя ошибка. Сообщи администратору."
                 elif resp.status != 200:
                     error_text = await resp.text()
                     logger.error(f"❌ GPT ошибка {resp.status}: {error_text}")
-                    return "❌ Не удалось решить задачу."
+                    return "❌ Не удалось решить задачу. Попробуй ещё раз."
                 
                 result = await resp.json()
         
@@ -348,11 +347,12 @@ async def solve_problem(problem_text):
             return answer
         except Exception as e:
             logger.error(f"❌ Ошибка парсинга GPT: {e}")
+            logger.error(f"Ответ: {result}")
             return "❌ Не удалось обработать ответ."
             
     except Exception as e:
-        logger.error(f"❌ Ошибка решения: {e}")
-        return "❌ Произошла ошибка."
+        logger.error(f"❌ Ошибка решения задачи: {e}")
+        return "❌ Произошла ошибка. Попробуй ещё раз."
 
 
 # ============================================
@@ -385,7 +385,7 @@ async def cmd_buy(message: types.Message):
     user_id = message.from_user.id
     
     await message.answer(
-        f"💳 <b>Безлимит — 100₽/мес</b>\n\n"
+        f"💳 <b>Безлимит на 30 дней — 100₽</b>\n\n"
         f"<b>Как оплатить:</b>\n"
         f"1️⃣ Перейди: {DONATION_LINK}\n"
         f"2️⃣ Сумма: <b>100₽</b>\n"
@@ -403,18 +403,19 @@ async def cmd_activate_paid(message: types.Message):
     user_id = message.from_user.id
     
     await message.answer(
-        f"📝 Заявка принята!\n"
-        f"Админ проверит оплату и активирует подписку.",
+        f"📝 <b>Заявка принята!</b>\n\n"
+        f"Админ проверит оплату в течение 10 минут и активирует подписку.",
         parse_mode="HTML"
     )
     
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"💰 <b>Новая заявка!</b>\n\n"
+            f"💰 <b>Новая заявка на оплату!</b>\n\n"
             f"👤 {message.from_user.full_name}\n"
-            f"🆔 <code>{user_id}</code>\n"
+            f"🆔 ID: <code>{user_id}</code>\n"
             f"📧 @{message.from_user.username or 'нет'}\n\n"
+            f"Проверь Donation Alerts и нажми:\n"
             f"/approve_{user_id} — активировать\n"
             f"/reject_{user_id} — отклонить",
             parse_mode="HTML"
@@ -435,37 +436,39 @@ async def cmd_status(message: types.Message):
     conn.close()
     
     if not result:
-        await message.answer("Напиши /start")
+        await message.answer("❌ Напиши /start")
         return
     
     free_requests, subscription_end, total_solved = result
     
     if free_requests > 0:
-        status = f"🎁 Бесплатных: <b>{free_requests}</b>"
+        status = f"🎁 Бесплатных решений: <b>{free_requests}</b>"
     elif subscription_end:
         try:
             end_date = datetime.fromisoformat(subscription_end)
             if end_date > datetime.now():
                 days_left = (end_date - datetime.now()).days
-                status = f"✅ Безлимит активен\nДней: <b>{days_left}</b>"
+                status = f"✅ <b>Безлимит активен</b>\nОсталось дней: <b>{days_left}</b>"
             else:
-                status = "❌ Подписка истекла"
+                status = "❌ Подписка истекла. Продли: /buy"
         except:
-            status = "❌ Ошибка"
+            status = "❌ Ошибка проверки"
     else:
-        status = "❌ Подписки нет"
+        status = "❌ Подписки нет. Купи: /buy"
     
     await message.answer(
-        f"📊 <b>Статус:</b>\n\n"
-        f"{status}\n"
-        f"📝 Решено: <b>{total_solved or 0}</b>",
+        f"📊 <b>Твой статус:</b>\n\n"
+        f"{status}\n\n"
+        f"📝 Решено задач: <b>{total_solved or 0}</b>",
         parse_mode="HTML"
     )
 
 
+# === КОМАНДА /RESET (ДЛЯ АДМИНА) ===
 @dp.message(Command("reset"))
 async def cmd_reset(message: types.Message):
     if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Только для админа")
         return
     
     conn = sqlite3.connect("users.db")
@@ -477,33 +480,39 @@ async def cmd_reset(message: types.Message):
     conn.commit()
     conn.close()
     
-    await message.answer("✅ Счётчик сброшен!")
+    await message.answer("✅ Счётчик сброшен! 3 бесплатных решения.")
 
 
+# === КОМАНДА /ACTIVATE (ДЛЯ АДМИНА) ===
 @dp.message(Command("activate"))
 async def cmd_activate(message: types.Message):
     if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Только для админа")
         return
     
     activate_subscription(message.from_user.id, days=30)
     await message.answer("✅ Подписка активирована на 30 дней!")
 
 
+# === ОДОБРЕНИЕ ОПЛАТЫ АДМИНОМ ===
 @dp.message(F.text.startswith("/approve_"))
 async def cmd_approve(message: types.Message):
     if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Только для админа")
         return
     
     try:
         user_id = int(message.text.replace("/approve_", ""))
         activate_subscription(user_id, days=30)
-        await message.answer(f"✅ Активировано для {user_id}")
+        
+        await message.answer(f"✅ Подписка активирована для пользователя {user_id}")
         
         try:
             await bot.send_message(
                 user_id,
-                "✅ <b>Оплата подтверждена!</b>\n"
-                "🎉 Безлимит на 30 дней активен!",
+                "✅ <b>Оплата подтверждена!</b>\n\n"
+                "🎉 Безлимит активирован на 30 дней.\n"
+                "Решай сколько хочешь задач!",
                 parse_mode="HTML"
             )
         except:
@@ -512,14 +521,16 @@ async def cmd_approve(message: types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 
+# === ОТКЛОНЕНИЕ ОПЛАТЫ АДМИНОМ ===
 @dp.message(F.text.startswith("/reject_"))
 async def cmd_reject(message: types.Message):
     if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Только для админа")
         return
     
     try:
         user_id = int(message.text.replace("/reject_", ""))
-        await message.answer(f"❌ Заявка {user_id} отклонена")
+        await message.answer(f"❌ Заявка от пользователя {user_id} отклонена")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -535,7 +546,7 @@ async def handle_photo(message: types.Message):
     if not has_active_subscription(user_id):
         await message.answer(
             "❌ <b>Бесплатные решения закончились.</b>\n\n"
-            "💳 /buy",
+            "💳 Подключи безлимит: /buy",
             parse_mode="HTML"
         )
         return
@@ -550,6 +561,7 @@ async def handle_photo(message: types.Message):
             "📸 Попробуй:\n"
             "• Сделать фото чётче\n"
             "• Улучшить освещение\n"
+            "• Поднести камеру ближе\n"
             "• Или напиши задачу текстом"
         )
         return
@@ -575,7 +587,8 @@ async def handle_text(message: types.Message):
     
     if not has_active_subscription(user_id):
         await message.answer(
-            "❌ <b>Бесплатные решения закончились.</b>\n\n💳 /buy",
+            "❌ <b>Бесплатные решения закончились.</b>\n\n"
+            "💳 Подключи безлимит: /buy",
             parse_mode="HTML"
         )
         return
@@ -587,10 +600,10 @@ async def handle_text(message: types.Message):
 
 
 # ============================================
-# === ВЕБ-СЕРВЕР ===
+# === ВЕБ-СЕРВЕР (ДЛЯ RENDER) ===
 # ============================================
 async def health_check(request):
-    return web.Response(text="OK")
+    return web.Response(text="OK - Bot is running")
 
 
 async def run_web_server():
@@ -609,7 +622,9 @@ async def run_web_server():
 # ============================================
 async def main():
     logger.info("🤖 Бот запускается...")
+    
     await run_web_server()
+    
     await dp.start_polling(bot)
 
 
