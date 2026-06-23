@@ -10,7 +10,6 @@ from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
-# === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -19,14 +18,13 @@ logger = logging.getLogger(__name__)
 
 # === НАСТРОЙКИ ===
 BOT_TOKEN = "8723169693:AAEk69a40-PlC1kWVgd-2F1MhKniitSmLn0"
-DA_TOKEN = "53EhsaDKxh5eZM8VMRDfc7hObwlKFDKvRizBNBJs"
 DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 
 YANDEX_VISION_API_KEY = "AQVN29h2XBqfhDo008M8xnF3lWO6X4TkTTG2mPg"
 YANDEX_GPT_API_KEY = "AQVNxq1LRjBAk8lQ8wWkxi4OMHjAd3HSLqyw-j6o"
 YANDEX_FOLDER_ID = "b1gomdro48eoehuesbdn"
 
-ADMIN_ID = 1029055491  # Твой Telegram ID
+ADMIN_ID = 1029055491
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
@@ -48,14 +46,6 @@ def init_db():
             total_solved INTEGER DEFAULT 0
         )
     """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS processed_donations (
-            donation_id INTEGER PRIMARY KEY,
-            user_id INTEGER,
-            amount REAL,
-            processed_at TIMESTAMP
-        )
-    """)
     conn.commit()
     conn.close()
     logger.info("✅ База данных инициализирована")
@@ -75,7 +65,7 @@ def get_user(user_id, username):
             (user_id, username)
         )
         conn.commit()
-        logger.info(f"👤 Новый пользователь: {user_id} (@{username})")
+        logger.info(f"👤 Новый пользователь: {user_id}")
     conn.close()
 
 
@@ -131,8 +121,6 @@ def decrement_free_requests(user_id):
         )
     conn.commit()
     conn.close()
-    
-    logger.info(f"📊 Пользователь {user_id}: осталось {max(0, free_requests - 1)} бесплатных")
 
 
 def activate_subscription(user_id, days=30):
@@ -149,82 +137,7 @@ def activate_subscription(user_id, days=30):
 
 
 # ============================================
-# === ПРОВЕРКА ДОНАТОВ ===
-# ============================================
-async def check_donations():
-    url = "https://www.donationalerts.com/api/v1/alerts/donations"
-    headers = {"Authorization": f"Bearer {DA_TOKEN}"}
-    params = {"type": "1"}
-    
-    await asyncio.sleep(5)  # Ждём запуска бота
-    logger.info("💰 Начинаю проверку донатов...")
-    
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, params=params) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        donations = data.get("data", [])
-                        
-                        for donation in donations:
-                            donation_id = donation["id"]
-                            amount = float(donation.get("amount", 0))
-                            message = donation.get("message", "") or ""
-                            username = donation.get("username", "Аноним")
-                            created_at = donation.get("created_at", "")
-                            
-                            if amount >= 100 and message.strip():
-                                try:
-                                    user_id = int(message.strip())
-                                    
-                                    conn = sqlite3.connect("users.db")
-                                    cursor = conn.cursor()
-                                    cursor.execute(
-                                        "SELECT * FROM processed_donations WHERE donation_id = ?",
-                                        (donation_id,)
-                                    )
-                                    
-                                    if not cursor.fetchone():
-                                        logger.info(f"💵 Новый донат: ID={donation_id}, {amount}₽ от {username}, msg={message}")
-                                        
-                                        activate_subscription(user_id, days=30)
-                                        
-                                        cursor.execute(
-                                            "INSERT INTO processed_donations (donation_id, user_id, amount, processed_at) VALUES (?, ?, ?, ?)",
-                                            (donation_id, user_id, amount, datetime.now().isoformat())
-                                        )
-                                        conn.commit()
-                                        conn.close()
-                                        
-                                        try:
-                                            await bot.send_message(
-                                                user_id,
-                                                f"✅ Оплата получена!\n\n"
-                                                f"🎉 Безлимит активирован на 30 дней.\n"
-                                                f"Решай сколько хочешь задач!"
-                                            )
-                                            logger.info(f"💰 Подписка активирована для {user_id}!")
-                                        except Exception as e:
-                                            logger.error(f"❌ Не удалось отправить сообщение: {e}")
-                                    else:
-                                        conn.close()
-                                except ValueError as e:
-                                    logger.warning(f"⚠️ Не удалось распарсить ID из '{message}': {e}")
-                    elif resp.status == 401:
-                        logger.error(f"❌ DA_TOKEN неправильный! Статус 401")
-                    else:
-                        error_text = await resp.text()
-                        logger.error(f"❌ Ошибка DA API: {resp.status} - {error_text}")
-        
-        except Exception as e:
-            logger.error(f"❌ Ошибка проверки донатов: {e}")
-        
-        await asyncio.sleep(30)
-
-
-# ============================================
-# === РАСПОЗНАВАНИЕ ФОТО (YANDEX VISION) ===
+# === РАСПОЗНАВАНИЕ ФОТО ===
 # ============================================
 async def recognize_text_from_photo(photo_file_id):
     try:
@@ -236,11 +149,8 @@ async def recognize_text_from_photo(photo_file_id):
         async with aiohttp.ClientSession() as session:
             async with session.get(photo_url) as resp:
                 if resp.status != 200:
-                    logger.error(f"❌ Не удалось скачать фото: {resp.status}")
                     return None
                 photo_bytes = await resp.read()
-        
-        logger.info(f"📥 Фото загружено, размер: {len(photo_bytes)} байт")
         
         encoded_image = base64.b64encode(photo_bytes).decode('utf-8')
         
@@ -250,42 +160,29 @@ async def recognize_text_from_photo(photo_file_id):
             "Content-Type": "application/json"
         }
         
-        # ПРАВИЛЬНЫЙ формат запроса с folderId
         data = {
             "folderId": YANDEX_FOLDER_ID,
             "analyze_specs": [
                 {
-                    "image": {
-                        "content": encoded_image
-                    },
-                    "features": [
-                        {
-                            "type": "TEXT_DETECTION"
-                        }
-                    ]
+                    "image": {"content": encoded_image},
+                    "features": [{"type": "TEXT_DETECTION"}]
                 }
             ]
         }
         
-        logger.info("📤 Отправляю в Yandex Vision...")
-        
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=data) as resp:
-                result = await resp.json()
-                logger.info(f"📥 Ответ Vision: статус {resp.status}")
-                
                 if resp.status != 200:
-                    logger.error(f"❌ Vision ошибка: {result}")
+                    logger.error(f"❌ Vision ошибка: {resp.status}")
                     return None
+                result = await resp.json()
         
-        # ПРАВИЛЬНЫЙ формат извлечения текста
         try:
             text = result["results"][0]["textAnnotation"]["fullText"]
             logger.info(f"✅ Распознан текст: {text[:100]}...")
             return text
-        except (KeyError, IndexError) as e:
+        except Exception as e:
             logger.error(f"❌ Не удалось извлечь текст: {e}")
-            logger.error(f"Полный ответ: {result}")
             return None
             
     except Exception as e:
@@ -294,7 +191,7 @@ async def recognize_text_from_photo(photo_file_id):
 
 
 # ============================================
-# === РЕШЕНИЕ ЗАДАЧИ (YANDEX GPT) ===
+# === РЕШЕНИЕ ЗАДАЧИ ===
 # ============================================
 async def solve_problem(problem_text):
     try:
@@ -322,11 +219,8 @@ x = 6 / 2
 
 ЗАПРЕЩЕНО:
 - Объяснения и вводные слова
-- "Решим", "Применим", "Итак"
 - Лишние строки
-- Текст вне указанного формата
-
-Отвечай ТОЛЬКО решением."""
+- Текст вне указанного формата"""
         
         data = {
             "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-lite",
@@ -343,28 +237,21 @@ x = 6 / 2
         
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=data) as resp:
-                if resp.status == 401:
-                    logger.error(f"❌ GPT: токен недействителен (401)")
-                    return "❌ Внутренняя ошибка. Сообщи администратору."
-                elif resp.status != 200:
-                    error_text = await resp.text()
-                    logger.error(f"❌ GPT ошибка {resp.status}: {error_text}")
-                    return "❌ Не удалось решить задачу. Попробуй ещё раз."
-                
+                if resp.status != 200:
+                    logger.error(f"❌ GPT ошибка: {resp.status}")
+                    return "❌ Не удалось решить задачу."
                 result = await resp.json()
         
         try:
             answer = result["result"]["alternatives"][0]["message"]["text"]
-            logger.info(f"✅ Решение получено: {len(answer)} символов")
             return answer
         except Exception as e:
             logger.error(f"❌ Ошибка парсинга GPT: {e}")
-            logger.error(f"Ответ: {result}")
             return "❌ Не удалось обработать ответ."
             
     except Exception as e:
         logger.error(f"❌ Ошибка решения задачи: {e}")
-        return "❌ Произошла ошибка. Попробуй ещё раз."
+        return "❌ Произошла ошибка."
 
 
 # ============================================
@@ -382,7 +269,7 @@ async def cmd_start(message: types.Message):
     
     await message.answer(
         f"👋 <b>Привет!</b> Я бот-решатель задач.\n\n"
-        f"📸 Пришли <b>ФОТО</b> задачи или напиши <b>ТЕКСТОМ</b>.\n"
+        f"📸 Пришли <b>ФОТО</b> или напиши <b>ТЕКСТОМ</b>.\n"
         f"⚡ Решу мгновенно, кратко, без воды.\n\n"
         f"🎁 Бесплатных решений: <b>{free_requests}</b>\n"
         f"💳 Безлимит: 100₽/мес\n\n"
@@ -398,18 +285,49 @@ async def cmd_buy(message: types.Message):
     
     await message.answer(
         f"💳 <b>Безлимит на 30 дней — 100₽</b>\n\n"
-        f"Решай сколько хочешь задач, без ограничений.\n\n"
+        f"Решай сколько хочешь задач.\n\n"
         f"<b>Как оплатить:</b>\n"
-        f"1️⃣ Перейди по ссылке ниже\n"
-        f"2️⃣ Введи сумму: <b>100₽</b>\n"
-        f"3️⃣ В поле «Сообщение» напиши свой ID:\n"
+        f"1️⃣ Перейди: {DONATION_LINK}\n"
+        f"2️⃣ Сумма: <b>100₽</b>\n"
+        f"3️⃣ В «Сообщение» напиши:\n"
         f"<code>{user_id}</code>\n"
-        f"4️⃣ Нажми «Отправить» и оплати\n\n"
-        f"⏳ Подписка активируется за 1 минуту.\n\n"
+        f"4️⃣ Оплати\n\n"
+        f"⏳ После оплаты напиши мне /activate_paid\n"
+        f"Я проверю и активирую подписку!\n\n"
         f"🔗 <a href='{DONATION_LINK}'>Перейти к оплате</a>",
         parse_mode="HTML",
         disable_web_page_preview=True
     )
+
+
+@dp.message(Command("activate_paid"))
+async def cmd_activate_paid(message: types.Message):
+    """Пользователь пишет после оплаты. Админ должен вручную подтвердить."""
+    user_id = message.from_user.id
+    
+    await message.answer(
+        f"📝 <b>Заявка принята!</b>\n\n"
+        f"Твой ID: <code>{user_id}</code>\n\n"
+        f"Администратор проверит оплату в течение 10 минут и активирует подписку.\n"
+        f"Ты получишь уведомление, когда всё будет готово.",
+        parse_mode="HTML"
+    )
+    
+    # Уведомляем админа
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💰 <b>Новая заявка на оплату!</b>\n\n"
+            f"👤 Пользователь: {message.from_user.full_name}\n"
+            f"🆔 ID: <code>{user_id}</code>\n"
+            f"📧 Username: @{message.from_user.username or 'нет'}\n\n"
+            f"Проверь Donation Alerts и нажми:\n"
+            f"/approve_{user_id} — активировать\n"
+            f"/reject_{user_id} — отклонить",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"❌ Не удалось уведомить админа: {e}")
 
 
 @dp.message(Command("status"))
@@ -455,38 +373,72 @@ async def cmd_status(message: types.Message):
 # === КОМАНДА /RESET (ДЛЯ АДМИНА) ===
 @dp.message(Command("reset"))
 async def cmd_reset(message: types.Message):
-    user_id = message.from_user.id
-    
-    if user_id != ADMIN_ID:
-        await message.answer("❌ Эта команда только для админа")
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Только для админа")
         return
     
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
     cursor.execute(
         "UPDATE users SET free_requests = 3 WHERE user_id = ?",
-        (user_id,)
+        (message.from_user.id,)
     )
     conn.commit()
     conn.close()
     
-    await message.answer("✅ Счётчик сброшен! У тебя снова 3 бесплатных решения.")
+    await message.answer("✅ Счётчик сброшен! 3 бесплатных решения.")
 
 
 # === КОМАНДА /ACTIVATE (ДЛЯ АДМИНА) ===
 @dp.message(Command("activate"))
 async def cmd_activate(message: types.Message):
-    user_id = message.from_user.id
-    
-    if user_id != ADMIN_ID:
-        await message.answer("❌ Эта команда только для админа")
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Только для админа")
         return
     
-    activate_subscription(user_id, days=30)
-    await message.answer(
-        "✅ Подписка активирована на 30 дней!\n"
-        "Теперь решай сколько хочешь задач!"
-    )
+    activate_subscription(message.from_user.id, days=30)
+    await message.answer("✅ Подписка активирована на 30 дней!")
+
+
+# === ОДОБРЕНИЕ ОПЛАТЫ АДМИНОМ ===
+@dp.message(F.text.startswith("/approve_"))
+async def cmd_approve(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Только для админа")
+        return
+    
+    try:
+        user_id = int(message.text.replace("/approve_", ""))
+        activate_subscription(user_id, days=30)
+        
+        await message.answer(f"✅ Подписка активирована для пользователя {user_id}")
+        
+        try:
+            await bot.send_message(
+                user_id,
+                "✅ <b>Оплата подтверждена!</b>\n\n"
+                "🎉 Безлимит активирован на 30 дней.\n"
+                "Решай сколько хочешь задач!",
+                parse_mode="HTML"
+            )
+        except:
+            pass
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+# === ОТКЛОНЕНИЕ ОПЛАТЫ АДМИНОМ ===
+@dp.message(F.text.startswith("/reject_"))
+async def cmd_reject(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Только для админа")
+        return
+    
+    try:
+        user_id = int(message.text.replace("/reject_", ""))
+        await message.answer(f"❌ Заявка от пользователя {user_id} отклонена")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 # ============================================
@@ -500,27 +452,18 @@ async def handle_photo(message: types.Message):
     if not has_active_subscription(user_id):
         await message.answer(
             "❌ <b>Бесплатные решения закончились.</b>\n\n"
-            "💳 Подключи безлимит: /buy\n"
-            "Решай сколько хочешь задач!",
+            "💳 Подключи безлимит: /buy",
             parse_mode="HTML"
         )
         return
     
-    await message.answer("⏳ Распознаю текст с фото...")
+    await message.answer("⏳ Распознаю текст...")
     
     problem_text = await recognize_text_from_photo(message.photo[-1].file_id)
     
     if not problem_text:
-        await message.answer(
-            "❌ Не удалось распознать текст.\n\n"
-            "📸 Попробуй:\n"
-            "• Сделать фото чётче\n"
-            "• Улучшить освещение\n"
-            "• Или напиши задачу текстом"
-        )
+        await message.answer("❌ Не удалось распознать текст. Попробуй чётче фото или напиши текстом.")
         return
-    
-    await message.answer(f"📝 Распознано:\n<code>{problem_text[:200]}</code>\n\n🧠 Решаю...", parse_mode="HTML")
     
     solution = await solve_problem(problem_text)
     await message.answer(solution)
@@ -539,8 +482,7 @@ async def handle_text(message: types.Message):
     if not has_active_subscription(user_id):
         await message.answer(
             "❌ <b>Бесплатные решения закончились.</b>\n\n"
-            "💳 Подключи безлимит: /buy\n"
-            "Решай сколько хочешь задач!",
+            "💳 Подключи безлимит: /buy",
             parse_mode="HTML"
         )
         return
@@ -552,10 +494,10 @@ async def handle_text(message: types.Message):
 
 
 # ============================================
-# === ВЕБ-СЕРВЕР (ДЛЯ RENDER) ===
+# === ВЕБ-СЕРВЕР ===
 # ============================================
 async def health_check(request):
-    return web.Response(text="OK - Bot is running")
+    return web.Response(text="OK")
 
 
 async def run_web_server():
@@ -574,11 +516,7 @@ async def run_web_server():
 # ============================================
 async def main():
     logger.info("🤖 Бот запускается...")
-    
     await run_web_server()
-    
-    asyncio.create_task(check_donations())
-    
     await dp.start_polling(bot)
 
 
