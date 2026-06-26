@@ -20,11 +20,11 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "8763511259:AAHUONAkgzSzQgt3jZmru90io_p5rVCLW6k"
 DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 
-# OpenRouter API (БЕСПЛАТНО!)
+# OpenRouter API (дешёвая платная модель)
 OPENROUTER_API_KEY = "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"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-VISION_MODEL = "google/gemini-flash-1.5:free"
-TEXT_MODEL = "google/gemini-flash-1.5:free"
+VISION_MODEL = "google/gemini-flash-1.5"
+TEXT_MODEL = "google/gemini-flash-1.5"
 
 ADMIN_ID = 1029055491
 
@@ -149,10 +149,9 @@ def activate_subscription(user_id, days=30):
 
 
 # ============================================
-# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ФОТО (OPENROUTER) ===
+# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ФОТО ===
 # ============================================
 async def recognize_and_solve_photo(photo_file_id):
-    """Один запрос к OpenRouter Vision — распознаёт И решает"""
     try:
         logger.info("📸 Скачиваю фото...")
         
@@ -169,7 +168,6 @@ async def recognize_and_solve_photo(photo_file_id):
         
         encoded_image = base64.b64encode(photo_bytes).decode('utf-8')
         
-        # Запрос к OpenRouter
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -182,7 +180,7 @@ async def recognize_and_solve_photo(photo_file_id):
             "messages": [
                 {
                     "role": "system",
-                    "content": """Ты — эксперт по решению школьных и вузовских задач. На изображении задача по математике, физике, химии или геометрии.
+                    "content": """Ты — эксперт по решению задач. На изображении задача по математике, физике, химии или геометрии.
 
 ТВОЯ ЗАДАЧА:
 1. Распознай текст/формулы на изображении
@@ -226,10 +224,12 @@ async def recognize_and_solve_photo(photo_file_id):
             "max_tokens": 2048
         }
         
-        logger.info("📤 Отправляю в OpenRouter Vision...")
+        logger.info("📤 Отправляю в OpenRouter...")
         
         async with session.post(OPENROUTER_URL, headers=headers, json=data) as resp:
-            if resp.status == 401:
+            if resp.status == 402:
+                return None, "⚠️ Недостаточно средств на OpenRouter. Пополни баланс."
+            elif resp.status == 401:
                 return None, "❌ Неверный API ключ"
             elif resp.status == 429:
                 return None, "⏳ Слишком много запросов. Подожди минуту."
@@ -257,7 +257,7 @@ async def recognize_and_solve_photo(photo_file_id):
 
 
 # ============================================
-# === РЕШЕНИЕ ТЕКСТОВОЙ ЗАДАЧИ (OPENROUTER) ===
+# === РЕШЕНИЕ ТЕКСТОВОЙ ЗАДАЧИ ===
 # ============================================
 async def solve_problem(problem_text):
     try:
@@ -299,7 +299,9 @@ async def solve_problem(problem_text):
         
         session = await get_http_session()
         async with session.post(OPENROUTER_URL, headers=headers, json=data) as resp:
-            if resp.status != 200:
+            if resp.status == 402:
+                return "⚠️ Недостаточно средств на OpenRouter"
+            elif resp.status != 200:
                 error_text = await resp.text()
                 logger.error(f"❌ OpenRouter ошибка {resp.status}: {error_text[:500]}")
                 return "❌ Не удалось решить."
