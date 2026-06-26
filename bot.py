@@ -23,8 +23,8 @@ DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 # OpenRouter API (БЕСПЛАТНО!)
 OPENROUTER_API_KEY = "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"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-VISION_MODEL = "google/gemini-2.0-flash-exp:free"
-TEXT_MODEL = "google/gemini-2.0-flash-exp:free"
+VISION_MODEL = "google/gemini-flash-1.5:free"
+TEXT_MODEL = "google/gemini-flash-1.5:free"
 
 ADMIN_ID = 1029055491
 
