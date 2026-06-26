@@ -20,11 +20,9 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "8763511259:AAHUONAkgzSzQgt3jZmru90io_p5rVCLW6k"
 DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 
-# OpenRouter API (дешёвая платная модель)
-OPENROUTER_API_KEY = "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"
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-VISION_MODEL = "google/gemini-flash-1.5"
-TEXT_MODEL = "google/gemini-flash-1.5"
+# Yandex Cloud API (Оплата картой МИР/СБП из РФ)
+YANDEX_API_KEY = "AQVNxq1LRjBAk8lQ8wWkxi4OMHjAd3HSLqyw-j6o"
+YANDEX_FOLDER_ID = "b1gomdro48eoehuesbdn"
 
 ADMIN_ID = 1029055491
 
@@ -149,9 +147,10 @@ def activate_subscription(user_id, days=30):
 
 
 # ============================================
-# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ФОТО ===
+# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ФОТО (YANDEX VISION) ===
 # ============================================
 async def recognize_and_solve_photo(photo_file_id):
+    """Один запрос к YandexGPT Vision — распознаёт И решает"""
     try:
         logger.info("📸 Скачиваю фото...")
         
@@ -168,19 +167,14 @@ async def recognize_and_solve_photo(photo_file_id):
         
         encoded_image = base64.b64encode(photo_bytes).decode('utf-8')
         
+        # Запрос к YandexGPT Vision
+        url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://gdz-bot.onrender.com",
-            "X-Title": "GDZ Bot"
+            "Authorization": f"Api-Key {YANDEX_API_KEY}",
+            "Content-Type": "application/json"
         }
         
-        data = {
-            "model": VISION_MODEL,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": """Ты — эксперт по решению задач. На изображении задача по математике, физике, химии или геометрии.
+        system_prompt = """Ты — эксперт по решению школьных и вузовских задач (математика, физика, химия, геометрия).
 
 ТВОЯ ЗАДАЧА:
 1. Распознай текст/формулы на изображении
@@ -203,45 +197,55 @@ async def recognize_and_solve_photo(photo_file_id):
 - Для геометрии используй теоремы
 - Если на фото нет задачи — напиши "На фото не видно задачи"
 - НЕ пиши лишних слов"""
+        
+        data = {
+            "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-vision/latest",
+            "completionOptions": {
+                "stream": False,
+                "temperature": 0.1,
+                "maxTokens": "2000"
+            },
+            "messages": [
+                {
+                    "role": "system",
+                    "text": system_prompt
                 },
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type": "text",
-                            "text": "Распознай текст на фото и реши задачу."
-                        },
-                        {
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/jpeg;base64,{encoded_image}"
                             }
+                        },
+                        {
+                            "type": "text",
+                            "text": "Распознай текст на фото и реши задачу."
                         }
                     ]
                 }
-            ],
-            "temperature": 0.1,
-            "max_tokens": 2048
+            ]
         }
         
-        logger.info("📤 Отправляю в OpenRouter...")
+        logger.info("📤 Отправляю в YandexGPT Vision...")
         
-        async with session.post(OPENROUTER_URL, headers=headers, json=data) as resp:
-            if resp.status == 402:
-                return None, "⚠️ Недостаточно средств на OpenRouter. Пополни баланс."
-            elif resp.status == 401:
-                return None, "❌ Неверный API ключ"
-            elif resp.status == 429:
-                return None, "⏳ Слишком много запросов. Подожди минуту."
+        async with session.post(url, headers=headers, json=data) as resp:
+            if resp.status == 401:
+                return None, "❌ Ошибка API ключа Yandex"
+            elif resp.status == 403:
+                return None, "⚠️ Нет доступа. Проверь роль ai.vision.user и баланс"
+            elif resp.status == 404:
+                return None, "❌ Модель Vision недоступна. Проверь настройки"
             elif resp.status != 200:
                 error_text = await resp.text()
-                logger.error(f"❌ OpenRouter ошибка {resp.status}: {error_text[:500]}")
+                logger.error(f"❌ Yandex ошибка {resp.status}: {error_text[:500]}")
                 return None, f"❌ Ошибка API: {resp.status}"
             
             result = await resp.json()
         
         try:
-            answer = result["choices"][0]["message"]["content"]
+            answer = result["result"]["alternatives"][0]["message"]["text"]
             logger.info(f"✅ Решение получено ({len(answer)} симв.)")
             return answer, None
         except (KeyError, IndexError) as e:
@@ -257,25 +261,19 @@ async def recognize_and_solve_photo(photo_file_id):
 
 
 # ============================================
-# === РЕШЕНИЕ ТЕКСТОВОЙ ЗАДАЧИ ===
+# === РЕШЕНИЕ ТЕКСТОВОЙ ЗАДАЧИ (YANDEX GPT LITE) ===
 # ============================================
 async def solve_problem(problem_text):
     try:
         logger.info(f"🧠 Решаю: {problem_text[:100]}...")
         
+        url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://gdz-bot.onrender.com",
-            "X-Title": "GDZ Bot"
+            "Authorization": f"Api-Key {YANDEX_API_KEY}",
+            "Content-Type": "application/json"
         }
         
-        data = {
-            "model": TEXT_MODEL,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": """Ты решаешь задачи по математике, физике, химии, геометрии.
+        system_prompt = """Ты решаешь задачи по математике, физике, химии, геометрии.
 
 ФОРМАТ:
 📝 Задача: [кратко]
@@ -287,28 +285,34 @@ async def solve_problem(problem_text):
 ✅ Ответ: [результат]
 
 БЕЗ лишних слов. Только решение."""
-                },
-                {
-                    "role": "user",
-                    "content": problem_text
-                }
-            ],
-            "temperature": 0.1,
-            "max_tokens": 1500
+        
+        data = {
+            "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-lite/latest",
+            "completionOptions": {
+                "stream": False,
+                "temperature": 0.1,
+                "maxTokens": "1500"
+            },
+            "messages": [
+                {"role": "system", "text": system_prompt},
+                {"role": "user", "text": problem_text}
+            ]
         }
         
         session = await get_http_session()
-        async with session.post(OPENROUTER_URL, headers=headers, json=data) as resp:
-            if resp.status == 402:
-                return "⚠️ Недостаточно средств на OpenRouter"
+        async with session.post(url, headers=headers, json=data) as resp:
+            if resp.status == 401:
+                return "❌ Ошибка API ключа"
+            elif resp.status == 403:
+                return "⚠️ Нет доступа. Проверь баланс Yandex Cloud"
             elif resp.status != 200:
                 error_text = await resp.text()
-                logger.error(f"❌ OpenRouter ошибка {resp.status}: {error_text[:500]}")
+                logger.error(f"❌ Yandex ошибка {resp.status}: {error_text[:500]}")
                 return "❌ Не удалось решить."
             result = await resp.json()
         
         try:
-            answer = result["choices"][0]["message"]["content"]
+            answer = result["result"]["alternatives"][0]["message"]["text"]
             logger.info(f"✅ Решение получено ({len(answer)} симв.)")
             return answer
         except Exception as e:
@@ -321,7 +325,7 @@ async def solve_problem(problem_text):
 
 
 # ============================================
-# === ОБРАБОТЧИКИ ===
+# === ОБРАБОТЧИКИ КОМАНД ===
 # ============================================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
