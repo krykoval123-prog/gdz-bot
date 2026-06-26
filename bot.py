@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "8763511259:AAHUONAkgzSzQgt3jZmru90io_p5rVCLW6k"
 DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 
-# Yandex Cloud (используем уже оплаченный баланс)
 YANDEX_API_KEY = "AQVNxq1LRjBAk8lQ8wWkxi4OMHjAd3HSLqyw-j6o"
 YANDEX_FOLDER_ID = "b1gomdro48eoehuesbdn"
 
@@ -30,8 +29,8 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# Общий HTTP-клиент для ускорения работы
 http_session = None
+
 
 async def get_http_session():
     global http_session
@@ -39,6 +38,13 @@ async def get_http_session():
         timeout = aiohttp.ClientTimeout(total=60)
         http_session = aiohttp.ClientSession(timeout=timeout)
     return http_session
+
+
+async def close_http_session():
+    global http_session
+    if http_session and not http_session.closed:
+        await http_session.close()
+        logger.info("✅ HTTP сессия закрыта")
 
 
 # ============================================
@@ -132,9 +138,9 @@ async def recognize_and_solve_photo(photo_file_id):
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}", "Content-Type": "application/json"}
         
-        # Сжатый промпт для экономии токенов
+        # Пробуем rc версию модели (стабильная)
         data = {
-            "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-vision/latest",
+            "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-vision/rc",
             "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "1500"},
             "messages": [
                 {"role": "system", "text": "Реши задачу с фото. Формат:\n📝 Задача: [текст]\n🧠 Решение: [шаги]\n✅ Ответ: [результат]\nКратко, русский язык."},
@@ -146,18 +152,31 @@ async def recognize_and_solve_photo(photo_file_id):
         }
         
         async with session.post(url, headers=headers, json=data) as resp:
-            if resp.status == 403: return None, "⚠️ Ошибка доступа. Проверь роль ai.vision.user в Yandex Cloud"
-            if resp.status != 200: 
-                logger.error(f"Vision error: {await resp.text()}")
+            if resp.status == 404:
+                logger.warning("⚠️ yandexgpt-vision/rc не найден, пробуем без версии...")
+                # Fallback: пробуем без указания версии
+                data["modelUri"] = f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-vision"
+                async with session.post(url, headers=headers, json=data) as resp2:
+                    if resp2.status != 200:
+                        error_text = await resp2.text()
+                        logger.error(f"Vision fallback error: {error_text[:300]}")
+                        return None, "❌ Модель Vision недоступна. Напиши задачу текстом."
+                    result = await resp2.json()
+            elif resp.status == 403:
+                return None, "⚠️ Нет доступа. Проверь роль ai.vision.user и баланс"
+            elif resp.status != 200:
+                error_text = await resp.text()
+                logger.error(f"Vision error: {error_text[:300]}")
                 return None, f"❌ Ошибка Vision API ({resp.status})"
-            result = await resp.json()
+            else:
+                result = await resp.json()
         
         answer = result["result"]["alternatives"][0]["message"]["text"]
         return answer, None
         
     except Exception as e:
         logger.error(f"Vision error: {e}")
-        return None, "❌ Ошибка распознавания фото"
+        return None, "❌ Ошибка распознавания. Напиши задачу текстом."
 
 
 # ============================================
@@ -168,7 +187,6 @@ async def solve_problem(problem_text):
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}", "Content-Type": "application/json"}
         
-        # Используем LITE модель — она в 5 раз дешевле обычной
         data = {
             "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-lite/latest",
             "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "1000"},
@@ -338,13 +356,15 @@ async def run_web_server():
 async def main():
     logger.info("🤖 Запуск...")
     
-    # КРИТИЧЕСКИ ВАЖНО: сбрасываем вебхук и пропускаем старые обновления
-    # Это решает проблему Conflict Error навсегда
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("✅ Вебхук сброшен, старые обновления пропущены")
+    logger.info("✅ Вебхук сброшен")
     
     await run_web_server()
-    await dp.start_polling(bot)
+    
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await close_http_session()
 
 if __name__ == "__main__":
     asyncio.run(main())
