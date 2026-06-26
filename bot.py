@@ -20,9 +20,11 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "8763511259:AAHUONAkgzSzQgt3jZmru90io_p5rVCLW6k"
 DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 
-# Google Gemini API (БЕСПЛАТНО!)
-GEMINI_API_KEY = "AQ.Ab8RN6LWOAGrgncTY0k2LjO4Rlxm2kehnuZ6NPOVpBc7AQvK8w"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+# OpenRouter API (БЕСПЛАТНО!)
+OPENROUTER_API_KEY = "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"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+VISION_MODEL = "google/gemini-2.0-flash-exp:free"
+TEXT_MODEL = "google/gemini-2.0-flash-exp:free"
 
 ADMIN_ID = 1029055491
 
@@ -36,7 +38,8 @@ http_session = None
 async def get_http_session():
     global http_session
     if http_session is None or http_session.closed:
-        http_session = aiohttp.ClientSession()
+        timeout = aiohttp.ClientTimeout(total=60)
+        http_session = aiohttp.ClientSession(timeout=timeout)
     return http_session
 
 
@@ -146,10 +149,10 @@ def activate_subscription(user_id, days=30):
 
 
 # ============================================
-# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ФОТО (GEMINI) ===
+# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ФОТО (OPENROUTER) ===
 # ============================================
 async def recognize_and_solve_photo(photo_file_id):
-    """Один запрос к Gemini — распознаёт фото И решает задачу"""
+    """Один запрос к OpenRouter Vision — распознаёт И решает"""
     try:
         logger.info("📸 Скачиваю фото...")
         
@@ -166,15 +169,20 @@ async def recognize_and_solve_photo(photo_file_id):
         
         encoded_image = base64.b64encode(photo_bytes).decode('utf-8')
         
-        # Запрос к Gemini
-        url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
+        # Запрос к OpenRouter
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://gdz-bot.onrender.com",
+            "X-Title": "GDZ Bot"
+        }
         
         data = {
-            "contents": [
+            "model": VISION_MODEL,
+            "messages": [
                 {
-                    "parts": [
-                        {
-                            "text": """Ты — эксперт по решению задач. На изображении может быть задача по математике, физике, химии или геометрии.
+                    "role": "system",
+                    "content": """Ты — эксперт по решению школьных и вузовских задач. На изображении задача по математике, физике, химии или геометрии.
 
 ТВОЯ ЗАДАЧА:
 1. Распознай текст/формулы на изображении
@@ -197,44 +205,47 @@ async def recognize_and_solve_photo(photo_file_id):
 - Для геометрии используй теоремы
 - Если на фото нет задачи — напиши "На фото не видно задачи"
 - НЕ пиши лишних слов"""
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Распознай текст на фото и реши задачу."
                         },
                         {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": encoded_image
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{encoded_image}"
                             }
                         }
                     ]
                 }
             ],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 2048
-            }
+            "temperature": 0.1,
+            "max_tokens": 2048
         }
         
-        logger.info("📤 Отправляю в Gemini...")
+        logger.info("📤 Отправляю в OpenRouter Vision...")
         
-        async with session.post(url, json=data) as resp:
-            if resp.status == 400:
-                error_text = await resp.text()
-                logger.error(f"❌ Gemini ошибка 400: {error_text}")
-                return None, "❌ Неверный запрос к API"
-            elif resp.status == 403:
-                return None, "❌ Ошибка API ключа Gemini"
+        async with session.post(OPENROUTER_URL, headers=headers, json=data) as resp:
+            if resp.status == 401:
+                return None, "❌ Неверный API ключ"
+            elif resp.status == 429:
+                return None, "⏳ Слишком много запросов. Подожди минуту."
             elif resp.status != 200:
                 error_text = await resp.text()
-                logger.error(f"❌ Ошибка {resp.status}: {error_text}")
-                return None, f"❌ Ошибка сервера: {resp.status}"
+                logger.error(f"❌ OpenRouter ошибка {resp.status}: {error_text[:500]}")
+                return None, f"❌ Ошибка API: {resp.status}"
             
             result = await resp.json()
         
         try:
-            answer = result["candidates"][0]["content"]["parts"][0]["text"]
-            logger.info(f"✅ Gemini решение получено ({len(answer)} симв.)")
+            answer = result["choices"][0]["message"]["content"]
+            logger.info(f"✅ Решение получено ({len(answer)} симв.)")
             return answer, None
         except (KeyError, IndexError) as e:
-            logger.error(f"❌ Ошибка парсинга Gemini: {e}")
+            logger.error(f"❌ Ошибка парсинга: {e}")
             logger.error(f"Ответ: {result}")
             return None, "❌ Не удалось обработать ответ"
             
@@ -246,20 +257,25 @@ async def recognize_and_solve_photo(photo_file_id):
 
 
 # ============================================
-# === РЕШЕНИЕ ТЕКСТОВОЙ ЗАДАЧИ (GEMINI) ===
+# === РЕШЕНИЕ ТЕКСТОВОЙ ЗАДАЧИ (OPENROUTER) ===
 # ============================================
 async def solve_problem(problem_text):
     try:
         logger.info(f"🧠 Решаю: {problem_text[:100]}...")
         
-        url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://gdz-bot.onrender.com",
+            "X-Title": "GDZ Bot"
+        }
         
         data = {
-            "contents": [
+            "model": TEXT_MODEL,
+            "messages": [
                 {
-                    "parts": [
-                        {
-                            "text": f"""Ты решаешь задачи по математике, физике, химии, геометрии.
+                    "role": "system",
+                    "content": """Ты решаешь задачи по математике, физике, химии, геометрии.
 
 ФОРМАТ:
 📝 Задача: [кратко]
@@ -270,29 +286,27 @@ async def solve_problem(problem_text):
 
 ✅ Ответ: [результат]
 
-БЕЗ лишних слов. Только решение.
-
-Задача: {problem_text}"""
-                        }
-                    ]
+БЕЗ лишних слов. Только решение."""
+                },
+                {
+                    "role": "user",
+                    "content": problem_text
                 }
             ],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 1500
-            }
+            "temperature": 0.1,
+            "max_tokens": 1500
         }
         
         session = await get_http_session()
-        async with session.post(url, json=data) as resp:
+        async with session.post(OPENROUTER_URL, headers=headers, json=data) as resp:
             if resp.status != 200:
                 error_text = await resp.text()
-                logger.error(f"❌ Gemini ошибка {resp.status}: {error_text}")
+                logger.error(f"❌ OpenRouter ошибка {resp.status}: {error_text[:500]}")
                 return "❌ Не удалось решить."
             result = await resp.json()
         
         try:
-            answer = result["candidates"][0]["content"]["parts"][0]["text"]
+            answer = result["choices"][0]["message"]["content"]
             logger.info(f"✅ Решение получено ({len(answer)} симв.)")
             return answer
         except Exception as e:
@@ -305,7 +319,7 @@ async def solve_problem(problem_text):
 
 
 # ============================================
-# === ОБРАБОТЧИКИ КОМАНД ===
+# === ОБРАБОТЧИКИ ===
 # ============================================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
