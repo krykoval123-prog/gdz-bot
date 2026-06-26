@@ -17,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # === НАСТРОЙКИ ===
-BOT_TOKEN = "8723169693:AAEWKexNLVCuumgA5php5aSY_sUqSBCP8qg"
+BOT_TOKEN = "8763511259:AAHUONAkgzSzQgt3jZmru90io_p5rVCLW6k"
 DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 
 YANDEX_GPT_API_KEY = "AQVNxq1LRjBAk8lQ8wWkxi4OMHjAd3HSLqyw-j6o"
@@ -29,7 +29,6 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# Общий HTTP клиент (для скорости)
 http_session = None
 
 
@@ -146,17 +145,11 @@ def activate_subscription(user_id, days=30):
 
 
 # ============================================
-# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ОДНИМ ЗАПРОСОМ ===
+# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ФОТО ===
 # ============================================
 async def recognize_and_solve(photo_file_id):
-    """
-    ОДИН запрос к YandexGPT Vision:
-    - Распознаёт текст на фото
-    - Сразу решает задачу
-    - Быстро и бесплатно
-    """
     try:
-        logger.info(" Скачиваю фото...")
+        logger.info("📸 Скачиваю фото...")
         
         file = await bot.get_file(photo_file_id)
         photo_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
@@ -171,7 +164,6 @@ async def recognize_and_solve(photo_file_id):
         
         encoded_image = base64.b64encode(photo_bytes).decode('utf-8')
         
-        # === ОДИН ЗАПРОС К YANDEXGPT VISION ===
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         headers = {
             "Authorization": f"Api-Key {YANDEX_GPT_API_KEY}",
@@ -199,11 +191,10 @@ async def recognize_and_solve(photo_file_id):
 - Отвечай на русском
 - Показывай все вычисления
 - Для геометрии используй теоремы
-- НЕ пиши "я не уверен" — решай уверенно
-- Если на фото нет задачи — напиши "На фото не видно задачи. Попробуй другое фото."
+- Если на фото нет задачи — напиши "На фото не видно задачи"
 
 ПРИМЕР:
-📝 Задача: Реши уравнение 2x - 6 = 0
+ Задача: Реши уравнение 2x - 6 = 0
 
 🧠 Решение:
 • 2x = 6
@@ -242,16 +233,15 @@ async def recognize_and_solve(photo_file_id):
             ]
         }
         
-        logger.info(" Отправляю в YandexGPT Vision...")
+        logger.info("📤 Отправляю в YandexGPT Vision...")
         
         async with session.post(url, headers=headers, json=data) as resp:
             if resp.status == 401:
-                return None, " Ошибка API ключа"
+                return None, "❌ Ошибка API ключа"
             elif resp.status == 400:
                 error_text = await resp.text()
                 logger.error(f"❌ Vision ошибка 400: {error_text}")
-                # Если vision модель не доступна — пробуем обычный GPT
-                return None, None  # Сигнал для fallback
+                return None, None
             elif resp.status != 200:
                 error_text = await resp.text()
                 logger.error(f"❌ Ошибка {resp.status}: {error_text}")
@@ -262,10 +252,10 @@ async def recognize_and_solve(photo_file_id):
         try:
             answer = result["result"]["alternatives"][0]["message"]["text"]
             logger.info(f"✅ Решение получено ({len(answer)} симв.)")
-            return answer, None  # answer, error=None
+            return answer, None
         except Exception as e:
             logger.error(f"❌ Ошибка парсинга: {e}")
-            return None, "❌ Не удалось обработать ответ"
+            return None, " Не удалось обработать ответ"
             
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
@@ -290,7 +280,7 @@ async def solve_problem(problem_text):
         system_prompt = """Ты решаешь задачи по математике, физике, химии, геометрии.
 
 ФОРМАТ:
- Задача: [кратко]
+📝 Задача: [кратко]
 
 🧠 Решение:
 • Шаг 1: ...
@@ -363,7 +353,7 @@ async def cmd_buy(message: types.Message):
         f"1️⃣ Перейди: {DONATION_LINK}\n"
         f"2️⃣ Сумма: <b>100₽</b>\n"
         f"3️⃣ В «Сообщение»: <code>{user_id}</code>\n"
-        f"4️⃣ Оплати\n\n"
+        f"4️ Оплати\n\n"
         f"После оплаты: /activate_paid\n"
         f"🔗 <a href='{DONATION_LINK}'>Оплатить</a>",
         parse_mode="HTML",
@@ -382,7 +372,7 @@ async def cmd_activate_paid(message: types.Message):
             ADMIN_ID,
             f"💰 <b>Заявка!</b>\n\n"
             f"👤 {message.from_user.full_name}\n"
-            f"🆔 <code>{user_id}</code>\n\n"
+            f" <code>{user_id}</code>\n\n"
             f"/approve_{user_id} — ОК\n"
             f"/reject_{user_id} — Отмена",
             parse_mode="HTML"
@@ -417,14 +407,14 @@ async def cmd_status(message: types.Message):
                 days = (end_date - datetime.now()).days
                 status = f"✅ Безлимит (дней: <b>{days}</b>)"
             else:
-                status = " Истёк"
+                status = "❌ Истёк"
         except:
-            status = "❌ Ошибка"
+            status = " Ошибка"
     else:
         status = "❌ Нет подписки"
     
     await message.answer(
-        f" <b>Статус:</b>\n\n"
+        f"📊 <b>Статус:</b>\n\n"
         f"{status}\n"
         f"📝 Решено: <b>{total_solved or 0}</b>",
         parse_mode="HTML"
@@ -485,7 +475,7 @@ async def cmd_reject(message: types.Message):
 
 
 # ============================================
-# === ОБРАБОТКА ФОТО (БЫСТРАЯ) ===
+# === ОБРАБОТКА ФОТО ===
 # ============================================
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
@@ -499,10 +489,8 @@ async def handle_photo(message: types.Message):
         )
         return
     
-    # Отправляем сообщение "Думаю..." и запоминаем его
     thinking_msg = await message.answer("⏳ Распознаю и решаю...")
     
-    # Распознаём и решаем ОДНИМ запросом
     answer, error = await recognize_and_solve(message.photo[-1].file_id)
     
     if error:
@@ -510,7 +498,6 @@ async def handle_photo(message: types.Message):
         return
     
     if not answer:
-        # Fallback: просим ввести текст
         await thinking_msg.edit_text(
             "❌ Не удалось распознать фото.\n\n"
             "📝 <b>Напиши задачу текстом</b> — я решу!",
@@ -518,7 +505,6 @@ async def handle_photo(message: types.Message):
         )
         return
     
-    # Отправляем решение
     await thinking_msg.edit_text(answer)
     
     decrement_free_requests(user_id)
@@ -534,12 +520,12 @@ async def handle_text(message: types.Message):
     
     if not has_active_subscription(user_id):
         await message.answer(
-            "❌ Бесплатные решения закончились.\n\n💳 /buy",
+            " Бесплатные решения закончились.\n\n💳 /buy",
             parse_mode="HTML"
         )
         return
     
-    thinking_msg = await message.answer(" Решаю...")
+    thinking_msg = await message.answer("🧠 Решаю...")
     
     solution = await solve_problem(message.text)
     
