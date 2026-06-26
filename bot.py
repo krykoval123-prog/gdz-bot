@@ -10,7 +10,6 @@ from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
-# === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -21,7 +20,6 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "8723169693:AAEWKexNLVCuumgA5php5aSY_sUqSBCP8qg"
 DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 
-YANDEX_VISION_API_KEY = "AQVN29h2XBqfhDo008M8xnF3lWO6X4TkTTG2mPg"
 YANDEX_GPT_API_KEY = "AQVNxq1LRjBAk8lQ8wWkxi4OMHjAd3HSLqyw-j6o"
 YANDEX_FOLDER_ID = "b1gomdro48eoehuesbdn"
 
@@ -30,6 +28,16 @@ ADMIN_ID = 1029055491
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
+
+# Общий HTTP клиент (для скорости)
+http_session = None
+
+
+async def get_http_session():
+    global http_session
+    if http_session is None or http_session.closed:
+        http_session = aiohttp.ClientSession()
+    return http_session
 
 
 # ============================================
@@ -66,7 +74,7 @@ def get_user(user_id, username):
             (user_id, username)
         )
         conn.commit()
-        logger.info(f"👤 Новый пользователь: {user_id} (@{username})")
+        logger.info(f"👤 Новый пользователь: {user_id}")
     conn.close()
 
 
@@ -122,7 +130,6 @@ def decrement_free_requests(user_id):
         )
     conn.commit()
     conn.close()
-    logger.info(f"📊 Пользователь {user_id}: осталось {max(0, free_requests - 1)} бесплатных")
 
 
 def activate_subscription(user_id, days=30):
@@ -139,156 +146,140 @@ def activate_subscription(user_id, days=30):
 
 
 # ============================================
-# === РАСПОЗНАВАНИЕ ФОТО (НОВЫЙ ПОДХОД) ===
+# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ОДНИМ ЗАПРОСОМ ===
 # ============================================
-async def recognize_text_from_photo(photo_file_id):
+async def recognize_and_solve(photo_file_id):
+    """
+    ОДИН запрос к YandexGPT Vision:
+    - Распознаёт текст на фото
+    - Сразу решает задачу
+    - Быстро и бесплатно
+    """
     try:
-        logger.info("📸 Начинаю распознавание фото...")
+        logger.info(" Скачиваю фото...")
         
-        # Скачиваем фото
         file = await bot.get_file(photo_file_id)
         photo_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(photo_url) as resp:
-                if resp.status != 200:
-                    logger.error(f"❌ Не удалось скачать фото: {resp.status}")
-                    return None
-                photo_bytes = await resp.read()
+        session = await get_http_session()
+        async with session.get(photo_url) as resp:
+            if resp.status != 200:
+                return None, "❌ Не удалось скачать фото"
+            photo_bytes = await resp.read()
         
-        logger.info(f"📥 Фото загружено: {len(photo_bytes)} байт")
+        logger.info(f"📥 Фото: {len(photo_bytes)} байт")
         
-        # === МЕТОД 1: Yandex Vision API (правильный формат) ===
-        try:
-            logger.info(" Пробую Yandex Vision API...")
-            
-            encoded_image = base64.b64encode(photo_bytes).decode('utf-8')
-            
-            url = "https://vision.api.cloud.yandex.net/vision/v1/batchAnalyze"
-            headers = {
-                "Authorization": f"Api-Key {YANDEX_VISION_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            # Правильный формат запроса
-            data = {
-                "folderId": YANDEX_FOLDER_ID,
-                "analyze_specs": [
-                    {
-                        "image": {"content": encoded_image},
-                        "features": [
-                            {
-                                "type": "TEXT_DETECTION",
-                                "language_codes": ["ru", "en"]
-                            }
-                        ]
-                    }
-                ]
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=data) as resp:
-                    status = resp.status
-                    result = await resp.json()
-                    
-                    logger.info(f"📥 Vision API: статус {status}")
-                    
-                    if status == 200:
-                        # Пробуем извлечь текст
-                        text = extract_text_from_vision_result(result)
-                        if text and len(text.strip()) > 2:
-                            logger.info(f"✅ Распознано через Vision: {text[:100]}")
-                            return text
-                        else:
-                            logger.warning("⚠️ Vision вернул пустой текст")
-                    else:
-                        logger.error(f"❌ Vision ошибка {status}: {result}")
+        encoded_image = base64.b64encode(photo_bytes).decode('utf-8')
         
-        except Exception as e:
-            logger.error(f"❌ Ошибка Vision API: {e}")
-        
-        # === МЕТОД 2: Отправляем в GPT с описанием ===
-        logger.info("🔍 Пробую через GPT (описательный метод)...")
-        
-        # Кодируем для отправки
-        encoded_for_gpt = base64.b64encode(photo_bytes).decode('utf-8')
-        
-        # Используем GPT для распознавания через vision
+        # === ОДИН ЗАПРОС К YANDEXGPT VISION ===
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         headers = {
             "Authorization": f"Api-Key {YANDEX_GPT_API_KEY}",
             "Content-Type": "application/json"
         }
         
-        # Для GPT отправляем запрос с просьбой описать что на фото
-        # Но это не сработает без vision-модели
+        system_prompt = """Ты — эксперт по решению задач. На изображении может быть задача по математике, физике, химии или геометрии.
+
+ТВОЯ ЗАДАЧА:
+1. Распознай текст/формулы на изображении
+2. Реши задачу пошагово
+3. Дай чёткий ответ
+
+ФОРМАТ ОТВЕТА:
+📝 Задача: [распознанный текст]
+
+🧠 Решение:
+• Шаг 1: ...
+• Шаг 2: ...
+• Шаг 3: ...
+
+✅ Ответ: [результат]
+
+ПРАВИЛА:
+- Отвечай на русском
+- Показывай все вычисления
+- Для геометрии используй теоремы
+- НЕ пиши "я не уверен" — решай уверенно
+- Если на фото нет задачи — напиши "На фото не видно задачи. Попробуй другое фото."
+
+ПРИМЕР:
+📝 Задача: Реши уравнение 2x - 6 = 0
+
+🧠 Решение:
+• 2x = 6
+• x = 6 / 2
+• x = 3
+
+✅ Ответ: x = 3"""
         
-        # === МЕТОД 3: Просим пользователя ввести текст ===
-        logger.warning("⚠️ Автоматическое распознавание не сработало")
-        return None
+        data = {
+            "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-vision",
+            "completionOptions": {
+                "stream": False,
+                "temperature": 0.1,
+                "maxTokens": "2000"
+            },
+            "messages": [
+                {
+                    "role": "system",
+                    "text": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{encoded_image}"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": "Распознай текст на фото и реши задачу."
+                        }
+                    ]
+                }
+            ]
+        }
         
+        logger.info(" Отправляю в YandexGPT Vision...")
+        
+        async with session.post(url, headers=headers, json=data) as resp:
+            if resp.status == 401:
+                return None, " Ошибка API ключа"
+            elif resp.status == 400:
+                error_text = await resp.text()
+                logger.error(f"❌ Vision ошибка 400: {error_text}")
+                # Если vision модель не доступна — пробуем обычный GPT
+                return None, None  # Сигнал для fallback
+            elif resp.status != 200:
+                error_text = await resp.text()
+                logger.error(f"❌ Ошибка {resp.status}: {error_text}")
+                return None, f"❌ Ошибка сервера: {resp.status}"
+            
+            result = await resp.json()
+        
+        try:
+            answer = result["result"]["alternatives"][0]["message"]["text"]
+            logger.info(f"✅ Решение получено ({len(answer)} симв.)")
+            return answer, None  # answer, error=None
+        except Exception as e:
+            logger.error(f"❌ Ошибка парсинга: {e}")
+            return None, "❌ Не удалось обработать ответ"
+            
     except Exception as e:
-        logger.error(f"❌ Ошибка распознавания: {e}")
+        logger.error(f"❌ Ошибка: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return None
-
-
-def extract_text_from_vision_result(result):
-    """Извлекает текст из ответа Vision API"""
-    try:
-        # Формат 1: results[0].results[0].textDetection
-        if "results" in result:
-            for r in result["results"]:
-                if "results" in r:
-                    for sub in r["results"]:
-                        if "textDetection" in sub:
-                            td = sub["textDetection"]
-                            text_parts = []
-                            if "pages" in td:
-                                for page in td["pages"]:
-                                    if "blocks" in page:
-                                        for block in page["blocks"]:
-                                            if "lines" in block:
-                                                for line in block["lines"]:
-                                                    line_text = ""
-                                                    if "words" in line:
-                                                        for word in line["words"]:
-                                                            if "symbols" in word:
-                                                                for sym in word["symbols"]:
-                                                                    line_text += sym.get("text", "")
-                                                    if line_text.strip():
-                                                        text_parts.append(line_text.strip())
-            if text_parts:
-                return "\n".join(text_parts)
-        
-        # Формат 2: results[0].textAnnotation
-        if "results" in result and len(result["results"]) > 0:
-            if "textAnnotation" in result["results"][0]:
-                return result["results"][0]["textAnnotation"].get("fullText", "")
-        
-        # Формат 3: annotations
-        if "annotations" in result:
-            text_parts = []
-            for ann in result["annotations"]:
-                if "text" in ann:
-                    text_parts.append(ann["text"])
-            if text_parts:
-                return "\n".join(text_parts)
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка извлечения текста: {e}")
-        return None
+        return None, "❌ Произошла ошибка"
 
 
 # ============================================
-# === РЕШЕНИЕ ЗАДАЧИ ===
+# === РЕШЕНИЕ ТЕКСТОВОЙ ЗАДАЧИ ===
 # ============================================
 async def solve_problem(problem_text):
     try:
-        logger.info(f"🧠 Решаю задачу: {problem_text[:100]}...")
+        logger.info(f"🧠 Решаю: {problem_text[:100]}...")
         
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         headers = {
@@ -298,12 +289,14 @@ async def solve_problem(problem_text):
         
         system_prompt = """Ты решаешь задачи по математике, физике, химии, геометрии.
 
-ФОРМАТ ОТВЕТА:
-Задача: [кратко]
-Решение:
-- Шаг 1
-- Шаг 2
-Ответ: [результат]
+ФОРМАТ:
+ Задача: [кратко]
+
+🧠 Решение:
+• Шаг 1: ...
+• Шаг 2: ...
+
+✅ Ответ: [результат]
 
 БЕЗ лишних слов. Только решение."""
         
@@ -312,7 +305,7 @@ async def solve_problem(problem_text):
             "completionOptions": {
                 "stream": False,
                 "temperature": 0.1,
-                "maxTokens": "1000"
+                "maxTokens": "1500"
             },
             "messages": [
                 {"role": "system", "text": system_prompt},
@@ -320,18 +313,16 @@ async def solve_problem(problem_text):
             ]
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=data) as resp:
-                if resp.status != 200:
-                    return "❌ Не удалось решить."
-                
-                result = await resp.json()
+        session = await get_http_session()
+        async with session.post(url, headers=headers, json=data) as resp:
+            if resp.status != 200:
+                return "❌ Не удалось решить."
+            result = await resp.json()
         
         try:
-            answer = result["result"]["alternatives"][0]["message"]["text"]
-            return answer
+            return result["result"]["alternatives"][0]["message"]["text"]
         except:
-            return "❌ Ошибка обработки ответа."
+            return "❌ Ошибка обработки."
             
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
@@ -353,8 +344,8 @@ async def cmd_start(message: types.Message):
     
     await message.answer(
         f"👋 <b>Привет!</b> Я бот-решатель задач.\n\n"
-        f"📸 Пришли <b>ФОТО</b> или напиши <b>ТЕКСТОМ</b>.\n"
-        f"⚡ Решу математику, физику, химию.\n\n"
+        f" Пришли <b>ФОТО</b> задачи — решу мгновенно!\n"
+        f"⚡ Или напиши <b>ТЕКСТОМ</b>.\n\n"
         f"🎁 Бесплатных: <b>{free_requests}</b>\n"
         f"💳 Безлимит: 100₽/мес\n\n"
         f"/status — подписка\n"
@@ -397,7 +388,7 @@ async def cmd_activate_paid(message: types.Message):
             parse_mode="HTML"
         )
     except Exception as e:
-        logger.error(f"❌ Ошибка уведомления: {e}")
+        logger.error(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("status"))
@@ -426,14 +417,14 @@ async def cmd_status(message: types.Message):
                 days = (end_date - datetime.now()).days
                 status = f"✅ Безлимит (дней: <b>{days}</b>)"
             else:
-                status = "❌ Истёк"
+                status = " Истёк"
         except:
             status = "❌ Ошибка"
     else:
         status = "❌ Нет подписки"
     
     await message.answer(
-        f"📊 <b>Статус:</b>\n\n"
+        f" <b>Статус:</b>\n\n"
         f"{status}\n"
         f"📝 Решено: <b>{total_solved or 0}</b>",
         parse_mode="HTML"
@@ -493,48 +484,66 @@ async def cmd_reject(message: types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 
+# ============================================
+# === ОБРАБОТКА ФОТО (БЫСТРАЯ) ===
+# ============================================
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     user_id = message.from_user.id
     get_user(user_id, message.from_user.username)
     
     if not has_active_subscription(user_id):
-        await message.answer("❌ Бесплатные решения закончились.\n\n💳 /buy", parse_mode="HTML")
-        return
-    
-    await message.answer("⏳ Распознаю...")
-    
-    problem_text = await recognize_text_from_photo(message.photo[-1].file_id)
-    
-    if not problem_text:
-        # Если не распознали, просим ввести текст
         await message.answer(
-            "❌ Не удалось автоматически распознать текст.\n\n"
-            "📝 <b>Пожалуйста, напиши задачу текстом:</b>\n"
-            "Просто скопируй или напиши условие задачи, и я решу её!",
+            "❌ Бесплатные решения закончились.\n\n💳 /buy",
             parse_mode="HTML"
         )
         return
     
-    await message.answer(f"📝 <b>Распознано:</b>\n<code>{problem_text[:300]}</code>\n\n🧠 Решаю...", parse_mode="HTML")
+    # Отправляем сообщение "Думаю..." и запоминаем его
+    thinking_msg = await message.answer("⏳ Распознаю и решаю...")
     
-    solution = await solve_problem(problem_text)
-    await message.answer(solution)
+    # Распознаём и решаем ОДНИМ запросом
+    answer, error = await recognize_and_solve(message.photo[-1].file_id)
+    
+    if error:
+        await thinking_msg.edit_text(error)
+        return
+    
+    if not answer:
+        # Fallback: просим ввести текст
+        await thinking_msg.edit_text(
+            "❌ Не удалось распознать фото.\n\n"
+            "📝 <b>Напиши задачу текстом</b> — я решу!",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Отправляем решение
+    await thinking_msg.edit_text(answer)
     
     decrement_free_requests(user_id)
 
 
+# ============================================
+# === ОБРАБОТКА ТЕКСТА ===
+# ============================================
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
     get_user(user_id, message.from_user.username)
     
     if not has_active_subscription(user_id):
-        await message.answer("❌ Бесплатные решения закончились.\n\n💳 /buy", parse_mode="HTML")
+        await message.answer(
+            "❌ Бесплатные решения закончились.\n\n💳 /buy",
+            parse_mode="HTML"
+        )
         return
     
+    thinking_msg = await message.answer(" Решаю...")
+    
     solution = await solve_problem(message.text)
-    await message.answer(solution)
+    
+    await thinking_msg.edit_text(solution)
     
     decrement_free_requests(user_id)
 
