@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "8763511259:AAHUONAkgzSzQgt3jZmru90io_p5rVCLW6k"
 DONATION_LINK = "https://www.donationalerts.com/r/mYFIVEBOT"
 
-YANDEX_GPT_API_KEY = "AQVNxq1LRjBAk8lQ8wWkxi4OMHjAd3HSLqyw-j6o"
-YANDEX_FOLDER_ID = "b1gomdro48eoehuesbdn"
+# Google Gemini API (БЕСПЛАТНО!)
+GEMINI_API_KEY = "AQ.Ab8RN6LWOAGrgncTY0k2LjO4Rlxm2kehnuZ6NPOVpBc7AQvK8w"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 
 ADMIN_ID = 1029055491
 
@@ -145,9 +146,10 @@ def activate_subscription(user_id, days=30):
 
 
 # ============================================
-# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ФОТО ===
+# === РАСПОЗНАВАНИЕ + РЕШЕНИЕ ФОТО (GEMINI) ===
 # ============================================
-async def recognize_and_solve(photo_file_id):
+async def recognize_and_solve_photo(photo_file_id):
+    """Один запрос к Gemini — распознаёт фото И решает задачу"""
     try:
         logger.info("📸 Скачиваю фото...")
         
@@ -164,13 +166,15 @@ async def recognize_and_solve(photo_file_id):
         
         encoded_image = base64.b64encode(photo_bytes).decode('utf-8')
         
-        url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
-        headers = {
-            "Authorization": f"Api-Key {YANDEX_GPT_API_KEY}",
-            "Content-Type": "application/json"
-        }
+        # Запрос к Gemini
+        url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
         
-        system_prompt = """Ты — эксперт по решению задач. На изображении может быть задача по математике, физике, химии или геометрии.
+        data = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": """Ты — эксперт по решению задач. На изображении может быть задача по математике, физике, химии или геометрии.
 
 ТВОЯ ЗАДАЧА:
 1. Распознай текст/формулы на изображении
@@ -188,60 +192,36 @@ async def recognize_and_solve(photo_file_id):
 ✅ Ответ: [результат]
 
 ПРАВИЛА:
-- Отвечай на русском
+- Отвечай на русском языке
 - Показывай все вычисления
 - Для геометрии используй теоремы
 - Если на фото нет задачи — напиши "На фото не видно задачи"
-
-ПРИМЕР:
- Задача: Реши уравнение 2x - 6 = 0
-
-🧠 Решение:
-• 2x = 6
-• x = 6 / 2
-• x = 3
-
-✅ Ответ: x = 3"""
-        
-        data = {
-            "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-vision",
-            "completionOptions": {
-                "stream": False,
-                "temperature": 0.1,
-                "maxTokens": "2000"
-            },
-            "messages": [
-                {
-                    "role": "system",
-                    "text": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{encoded_image}"
-                            }
+- НЕ пиши лишних слов"""
                         },
                         {
-                            "type": "text",
-                            "text": "Распознай текст на фото и реши задачу."
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": encoded_image
+                            }
                         }
                     ]
                 }
-            ]
+            ],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 2048
+            }
         }
         
-        logger.info("📤 Отправляю в YandexGPT Vision...")
+        logger.info("📤 Отправляю в Gemini...")
         
-        async with session.post(url, headers=headers, json=data) as resp:
-            if resp.status == 401:
-                return None, "❌ Ошибка API ключа"
-            elif resp.status == 400:
+        async with session.post(url, json=data) as resp:
+            if resp.status == 400:
                 error_text = await resp.text()
-                logger.error(f"❌ Vision ошибка 400: {error_text}")
-                return None, None
+                logger.error(f"❌ Gemini ошибка 400: {error_text}")
+                return None, "❌ Неверный запрос к API"
+            elif resp.status == 403:
+                return None, "❌ Ошибка API ключа Gemini"
             elif resp.status != 200:
                 error_text = await resp.text()
                 logger.error(f"❌ Ошибка {resp.status}: {error_text}")
@@ -250,12 +230,13 @@ async def recognize_and_solve(photo_file_id):
             result = await resp.json()
         
         try:
-            answer = result["result"]["alternatives"][0]["message"]["text"]
-            logger.info(f"✅ Решение получено ({len(answer)} симв.)")
+            answer = result["candidates"][0]["content"]["parts"][0]["text"]
+            logger.info(f"✅ Gemini решение получено ({len(answer)} симв.)")
             return answer, None
-        except Exception as e:
-            logger.error(f"❌ Ошибка парсинга: {e}")
-            return None, " Не удалось обработать ответ"
+        except (KeyError, IndexError) as e:
+            logger.error(f"❌ Ошибка парсинга Gemini: {e}")
+            logger.error(f"Ответ: {result}")
+            return None, "❌ Не удалось обработать ответ"
             
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
@@ -265,19 +246,20 @@ async def recognize_and_solve(photo_file_id):
 
 
 # ============================================
-# === РЕШЕНИЕ ТЕКСТОВОЙ ЗАДАЧИ ===
+# === РЕШЕНИЕ ТЕКСТОВОЙ ЗАДАЧИ (GEMINI) ===
 # ============================================
 async def solve_problem(problem_text):
     try:
         logger.info(f"🧠 Решаю: {problem_text[:100]}...")
         
-        url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
-        headers = {
-            "Authorization": f"Api-Key {YANDEX_GPT_API_KEY}",
-            "Content-Type": "application/json"
-        }
+        url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
         
-        system_prompt = """Ты решаешь задачи по математике, физике, химии, геометрии.
+        data = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": f"""Ты решаешь задачи по математике, физике, химии, геометрии.
 
 ФОРМАТ:
 📝 Задача: [кратко]
@@ -288,30 +270,33 @@ async def solve_problem(problem_text):
 
 ✅ Ответ: [результат]
 
-БЕЗ лишних слов. Только решение."""
-        
-        data = {
-            "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt-lite",
-            "completionOptions": {
-                "stream": False,
+БЕЗ лишних слов. Только решение.
+
+Задача: {problem_text}"""
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
                 "temperature": 0.1,
-                "maxTokens": "1500"
-            },
-            "messages": [
-                {"role": "system", "text": system_prompt},
-                {"role": "user", "text": problem_text}
-            ]
+                "maxOutputTokens": 1500
+            }
         }
         
         session = await get_http_session()
-        async with session.post(url, headers=headers, json=data) as resp:
+        async with session.post(url, json=data) as resp:
             if resp.status != 200:
+                error_text = await resp.text()
+                logger.error(f"❌ Gemini ошибка {resp.status}: {error_text}")
                 return "❌ Не удалось решить."
             result = await resp.json()
         
         try:
-            return result["result"]["alternatives"][0]["message"]["text"]
-        except:
+            answer = result["candidates"][0]["content"]["parts"][0]["text"]
+            logger.info(f"✅ Решение получено ({len(answer)} симв.)")
+            return answer
+        except Exception as e:
+            logger.error(f"❌ Ошибка парсинга: {e}")
             return "❌ Ошибка обработки."
             
     except Exception as e:
@@ -320,7 +305,7 @@ async def solve_problem(problem_text):
 
 
 # ============================================
-# === ОБРАБОТЧИКИ ===
+# === ОБРАБОТЧИКИ КОМАНД ===
 # ============================================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -334,7 +319,7 @@ async def cmd_start(message: types.Message):
     
     await message.answer(
         f"👋 <b>Привет!</b> Я бот-решатель задач.\n\n"
-        f" Пришли <b>ФОТО</b> задачи — решу мгновенно!\n"
+        f"📸 Пришли <b>ФОТО</b> задачи — решу мгновенно!\n"
         f"⚡ Или напиши <b>ТЕКСТОМ</b>.\n\n"
         f"🎁 Бесплатных: <b>{free_requests}</b>\n"
         f"💳 Безлимит: 100₽/мес\n\n"
@@ -353,7 +338,7 @@ async def cmd_buy(message: types.Message):
         f"1️⃣ Перейди: {DONATION_LINK}\n"
         f"2️⃣ Сумма: <b>100₽</b>\n"
         f"3️⃣ В «Сообщение»: <code>{user_id}</code>\n"
-        f"4️ Оплати\n\n"
+        f"4️⃣ Оплати\n\n"
         f"После оплаты: /activate_paid\n"
         f"🔗 <a href='{DONATION_LINK}'>Оплатить</a>",
         parse_mode="HTML",
@@ -372,7 +357,7 @@ async def cmd_activate_paid(message: types.Message):
             ADMIN_ID,
             f"💰 <b>Заявка!</b>\n\n"
             f"👤 {message.from_user.full_name}\n"
-            f" <code>{user_id}</code>\n\n"
+            f"🆔 <code>{user_id}</code>\n\n"
             f"/approve_{user_id} — ОК\n"
             f"/reject_{user_id} — Отмена",
             parse_mode="HTML"
@@ -409,7 +394,7 @@ async def cmd_status(message: types.Message):
             else:
                 status = "❌ Истёк"
         except:
-            status = " Ошибка"
+            status = "❌ Ошибка"
     else:
         status = "❌ Нет подписки"
     
@@ -491,7 +476,7 @@ async def handle_photo(message: types.Message):
     
     thinking_msg = await message.answer("⏳ Распознаю и решаю...")
     
-    answer, error = await recognize_and_solve(message.photo[-1].file_id)
+    answer, error = await recognize_and_solve_photo(message.photo[-1].file_id)
     
     if error:
         await thinking_msg.edit_text(error)
@@ -506,7 +491,6 @@ async def handle_photo(message: types.Message):
         return
     
     await thinking_msg.edit_text(answer)
-    
     decrement_free_requests(user_id)
 
 
@@ -520,7 +504,7 @@ async def handle_text(message: types.Message):
     
     if not has_active_subscription(user_id):
         await message.answer(
-            " Бесплатные решения закончились.\n\n💳 /buy",
+            "❌ Бесплатные решения закончились.\n\n💳 /buy",
             parse_mode="HTML"
         )
         return
@@ -530,7 +514,6 @@ async def handle_text(message: types.Message):
     solution = await solve_problem(message.text)
     
     await thinking_msg.edit_text(solution)
-    
     decrement_free_requests(user_id)
 
 
